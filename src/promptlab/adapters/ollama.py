@@ -109,7 +109,7 @@ class OllamaAdapter:
                 f"{self._settings.ollama_base_url}/api/generate",
                 json={
                     "model": self.model_id,
-                    "prompt": f"{request.system}\n\n{request.user_content}",
+                    "prompt": _compose_prompt(request),
                     "stream": False,
                     "options": {
                         "temperature": request.temperature,
@@ -193,6 +193,12 @@ class OllamaAdapter:
             error_type=error_type,
             response_text=response_text,
         )
+
+
+def _compose_prompt(request: CompletionRequest) -> str:
+    if request.system.strip():
+        return f"{request.system}\n\n{request.user_content}"
+    return request.user_content
 
 
 def _failed_attempt(*, latency_ms: int, error_type: str) -> dict[str, Any]:
