@@ -6,4 +6,7 @@ __pycache__/
 .ruff_cache/
 *.py[cod]
 runs/
-
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.cursor/
