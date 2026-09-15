@@ -88,7 +88,33 @@ OUTPUT_SCHEMAS: dict[TaskName, type[StrictModel]] = {
 
 
 def schema_description(model: type[BaseModel]) -> str:
-    """Return a JSON Schema description derived from the supplied Pydantic model."""
+    """Return a compact field map derived from the supplied Pydantic model."""
     schema: dict[str, Any] = model.model_json_schema()
-    return json.dumps(schema, indent=2)
+    defs = schema.get("$defs", {})
+    fields: dict[str, Any] = {}
+    for name, spec in schema.get("properties", {}).items():
+        if not isinstance(spec, dict):
+            continue
+        ref_name = str(spec.get("$ref", "")).rsplit("/", 1)[-1]
+        if isinstance(defs, dict) and ref_name in defs:
+            nested: dict[str, Any] = {}
+            for key, prop in defs[ref_name].get("properties", {}).items():
+                if not isinstance(prop, dict):
+                    continue
+                if "enum" in prop:
+                    nested[key] = " | ".join(str(value) for value in prop["enum"])
+                elif "anyOf" in prop:
+                    nested[key] = " | ".join(
+                        str(option.get("type", "value"))
+                        for option in prop["anyOf"]
+                        if isinstance(option, dict)
+                    )
+                else:
+                    nested[key] = prop.get("type", "value")
+            fields[name] = nested
+        elif "enum" in spec:
+            fields[name] = " | ".join(str(value) for value in spec["enum"])
+        else:
+            fields[name] = spec.get("type", "value")
+    return json.dumps(fields, indent=2)
 
