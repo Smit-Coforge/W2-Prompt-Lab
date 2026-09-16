@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from promptlab.records import ScoreRecord
+from promptlab.records import ScoreRecord, append_record
 from promptlab.schemas import TriageOutput
 
 SCORER_VERSION = "day4-v1"
@@ -142,3 +142,33 @@ def score_output(
             hit=boundary_ok,
         ),
     ]
+
+
+def write_scores(
+    run_path: Path,
+    gold_path: Path,
+    out_path: Path,
+    model_name: str,
+) -> list[ScoreRecord]:
+    """Score every successful Day 4 call record. Does not call a model."""
+    gold = load_gold(gold_path)
+    if out_path.exists():
+        out_path.unlink()
+    written: list[ScoreRecord] = []
+    for line in run_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        output = json.loads(rec["response_text"])
+        rows = score_output(
+            run_id=rec["run_id"],
+            case_id=rec["case_id"],
+            model_name=model_name,
+            prompt_version=rec["prompt_version"],
+            output=output,
+            gold=gold[rec["case_id"]],
+        )
+        for row in rows:
+            append_record(out_path, row)
+            written.append(row)
+    return written

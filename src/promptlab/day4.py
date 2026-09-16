@@ -14,11 +14,14 @@ from promptlab.adapters.ollama import OllamaAdapter
 from promptlab.config import PROJECT_ROOT, Settings
 from promptlab.prompts import load, render_user
 from promptlab.schemas import TriageOutput, TriageOutputWithAnalysis
+from promptlab.scoring import write_scores
 from promptlab.structured import complete_structured
 from promptlab.usage import CallRecord
 
 CASES_PATH = PROJECT_ROOT / "cases" / "triage.jsonl"
+GOLD_PATH = PROJECT_ROOT / "cases" / "gold" / "triage.jsonl"
 DAY4_RUN_PATH = PROJECT_ROOT / "docs" / "day4-run.jsonl"
+DAY4_SCORES_PATH = PROJECT_ROOT / "docs" / "day4-scores.jsonl"
 ADAPTER_RUNS_DIR = Path("runs")
 MAX_OUTPUT_TOKENS = 512
 TEMPERATURE = 0.0
@@ -119,7 +122,9 @@ def main() -> None:
 
     records = load_run_records(run_id)
     write_run_file(records, DAY4_RUN_PATH)
+    scores = write_scores(DAY4_RUN_PATH, GOLD_PATH, DAY4_SCORES_PATH, model.logical_name)
     print(f"wrote {DAY4_RUN_PATH} ({len(records)} records)")
+    print(f"wrote {DAY4_SCORES_PATH} ({len(scores)} scores)")
 
 
 if __name__ == "__main__":
