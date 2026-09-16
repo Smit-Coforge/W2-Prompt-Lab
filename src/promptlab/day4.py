@@ -22,7 +22,7 @@ DAY4_RUN_PATH = PROJECT_ROOT / "docs" / "day4-run.jsonl"
 ADAPTER_RUNS_DIR = Path("runs")
 MAX_OUTPUT_TOKENS = 512
 TEMPERATURE = 0.0
-PROMPT_VERSIONS = ("v1",)
+PROMPT_VERSIONS = ("v2",)
 SCHEMAS: dict[str, type[BaseModel]] = {
     "v1": TriageOutput,
     "v2": TriageOutputWithAnalysis,
