@@ -8,7 +8,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 Task = Literal["triage", "summarization", "extraction"]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -68,7 +67,7 @@ class GoldLabel(BaseModel):
     expected_queue: str | None = None
     expected_escalation: bool | None = None
 
-    # Assignment §2–§3: gold already carries these for E01/E02 and S01/S02.
+    # Assignment Instructions 2-3: gold already carries these for E01/E02 and S01/S02.
     version_group: str | None = None
     as_of: str | None = None
     expected_current_case_id: str | None = None
@@ -140,7 +139,7 @@ def _load_gold_rows(task: Task) -> list[dict[str, Any]]:
     # cases/gold/triage/*.json
     task_dir = _GOLD_DIR / task
     if task_dir.is_dir():
-        rows: list[dict[str, Any]] = []
+        dir_rows: list[dict[str, Any]] = []
 
         for path in sorted(task_dir.glob("*.json")):
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -149,9 +148,9 @@ def _load_gold_rows(task: Task) -> list[dict[str, Any]]:
 
             row = dict(value)
             row.setdefault("task", task)
-            rows.append(row)
+            dir_rows.append(row)
 
-        return rows
+        return dir_rows
 
     # cases/gold/*.json where each label contains its task.
     rows = []
@@ -210,7 +209,7 @@ def validate_corpus() -> dict[str, int]:
         "extraction",
     )
 
-    counts = {task: len(load_cases(task)) for task in tasks}
+    counts: dict[str, int] = {task: len(load_cases(task)) for task in tasks}
 
     all_ids: list[str] = []
     for task in tasks:

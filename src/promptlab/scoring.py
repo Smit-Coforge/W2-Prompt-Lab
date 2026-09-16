@@ -1,8 +1,8 @@
 """Deterministic scoring against gold labels.
 
-Assignment §1: extend Day 4 C5 metrics; do not call a model.
-Assignment §8: score rows carry join keys for CallRecord.
-Assignment §9 / §14: extraction missed vs invented stay separate;
+Assignment Instruction 1: extend Day 4 C5 metrics; do not call a model.
+Assignment Instruction 8: score rows carry join keys for CallRecord.
+Assignment Instructions 9 and 14: extraction missed vs invented stay separate;
 triage includes routing, escalation, boundary, and PII.
 """
 
