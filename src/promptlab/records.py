@@ -49,6 +49,9 @@ class ScoreRecord(Record):
     task: TaskName
     case_id: str
     model_name: str
+    # Assignment §8: join a score row to CallRecord without guessing.
+    model_id: str = ""
+    prompt_id: str = ""
     prompt_version: str
     scorer_version: str
     metric: str
