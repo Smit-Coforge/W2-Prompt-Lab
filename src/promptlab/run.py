@@ -1,19 +1,27 @@
+"""Day 5 harness: three tasks, two configured models, deterministic scores.
+
+Assignment Instructions 4-8: run.py -> prompt registry -> complete_structured
+-> ModelAdapter -> OllamaAdapter. No direct HTTP here. Scores join CallRecords.
+"""
+
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from collections import defaultdict
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 from typing import cast
 
-from promptlab.config import PROJECT_ROOT, ModelConfig, Settings
+from pydantic import ValidationError
+
+from promptlab.adapters.base import CompletionRequest, ModelAdapter
+from promptlab.adapters.ollama import OllamaAdapter
+from promptlab.config import PROJECT_ROOT, Settings
 from promptlab.corpus import GoldLabel, load_cases, validate_corpus
-from promptlab.prompts import build_prompt, prompt_version
-from promptlab.providers import CompletionFailed, OllamaProvider
-from promptlab.records import OutputRecord, ScoreRecord, UsageRecord, append_record
-from promptlab.report import write_reports
+from promptlab.prompts import TASK_PROMPTS, render_task_user
+from promptlab.records import ScoreRecord
 from promptlab.rules import VersionCandidate, select_current_version
 from promptlab.schemas import (
     OUTPUT_SCHEMAS,
@@ -23,8 +31,15 @@ from promptlab.schemas import (
     TaskName,
 )
 from promptlab.scoring import SCORER_VERSION, failure_scores, score_output
+from promptlab.structured import complete_structured
+from promptlab.usage import CallRecord
 
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+ADAPTER_RUNS_DIR = Path("runs")
+DAY5_RUN_PATH = PROJECT_ROOT / "docs" / "day5-run.jsonl"
+DAY5_SCORES_PATH = PROJECT_ROOT / "docs" / "day5-scores.jsonl"
+MAX_OUTPUT_TOKENS = 512
+TASKS: tuple[TaskName, ...] = ("summarization", "extraction", "triage")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -41,34 +56,25 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _usage_record(
-    *,
-    run_id: str,
-    task: TaskName,
-    case_id: str,
-    model: ModelConfig,
-    version: str,
-    attempt: object,
-) -> UsageRecord:
-    from promptlab.providers import AttemptData
+def _adapter_run_path(run_id: str) -> Path:
+    return ADAPTER_RUNS_DIR / f"{run_id}.jsonl"
 
-    data = cast(AttemptData, attempt)
-    return UsageRecord(
-        run_id=run_id,
-        task=task,
-        case_id=case_id,
-        model_name=model.logical_name,
-        model_id=model.model_id,
-        prompt_version=version,
-        attempt=data.attempt,
-        kind=data.kind,
-        status=data.status,
-        prompt_tokens=data.prompt_tokens,
-        completion_tokens=data.completion_tokens,
-        latency_ms=data.latency_ms,
-        cost_usd=data.cost_usd,
-        error=data.error,
-    )
+
+def _load_call_records(run_id: str) -> list[CallRecord]:
+    path = _adapter_run_path(run_id)
+    if not path.exists():
+        return []
+    records: list[CallRecord] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            records.append(CallRecord.model_validate_json(line))
+    return records
+
+
+def _write_jsonl(path: Path, records: list[CallRecord] | list[ScoreRecord]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(record.model_dump_json() + "\n" for record in records)
+    path.write_text(body, encoding="utf-8")
 
 
 def _version_fields(output: StrictModel) -> tuple[str, str] | None:
@@ -90,11 +96,13 @@ def _add_version_scores(
     run_id: str,
     task: TaskName,
     model_name: str,
+    model_id: str,
     labels: list[GoldLabel],
     outputs: dict[str, StrictModel],
-    scores_path: Path,
     all_scores: list[ScoreRecord],
 ) -> None:
+    # Instruction 2-3: currency is select_current_version, not a model opinion.
+    prompt_id, version = TASK_PROMPTS[task]
     grouped: dict[str, list[GoldLabel]] = defaultdict(list)
     for label in labels:
         if label.version_group:
@@ -115,7 +123,6 @@ def _add_version_scores(
         if expected is None or as_of_raw is None:
             continue
         candidates: list[VersionCandidate] = []
-        prompt_versions: set[str] = set()
         for label in group_labels:
             output = outputs.get(label.id)
             if output is None:
@@ -123,30 +130,35 @@ def _add_version_scores(
             extracted = _version_fields(output)
             if extracted is None:
                 continue
-            version, effective_raw = extracted
+            extracted_version, effective_raw = extracted
             try:
                 effective = date.fromisoformat(effective_raw)
             except ValueError:
                 continue
             candidates.append(
-                VersionCandidate(case_id=label.id, version=version, effective_date=effective)
+                VersionCandidate(
+                    case_id=label.id,
+                    version=extracted_version,
+                    effective_date=effective,
+                )
             )
-            prompt_versions.add(prompt_version(task, model_name))
         selected = select_current_version(candidates, date.fromisoformat(as_of_raw))
-        record = ScoreRecord(
-            run_id=run_id,
-            task=task,
-            case_id=f"version:{group_name}",
-            model_name=model_name,
-            prompt_version=",".join(sorted(prompt_versions)) or prompt_version(task, model_name),
-            scorer_version=SCORER_VERSION,
-            metric="version_selection_accuracy",
-            numerator=int(selected is not None and selected.case_id == expected),
-            denominator=1,
-            detail=f"expected={expected}; selected={selected.case_id if selected else 'none'}",
+        all_scores.append(
+            ScoreRecord(
+                run_id=run_id,
+                task=task,
+                case_id=f"version:{group_name}",
+                model_name=model_name,
+                model_id=model_id,
+                prompt_id=prompt_id,
+                prompt_version=version,
+                scorer_version=SCORER_VERSION,
+                metric="version_selection_accuracy",
+                numerator=int(selected is not None and selected.case_id == expected),
+                denominator=1,
+                detail=f"expected={expected}; selected={selected.case_id if selected else 'none'}",
+            )
         )
-        append_record(scores_path, record)
-        all_scores.append(record)
 
 
 def main() -> None:
@@ -163,129 +175,83 @@ def main() -> None:
     if limit is not None and limit < 1:
         raise SystemExit("--limit must be at least 1")
 
-    selected_tasks: list[TaskName]
-    if args.task:
-        selected_tasks = [cast(TaskName, args.task)]
-    else:
-        selected_tasks = ["triage", "summarization", "extraction"]
+    adapter_path = _adapter_run_path(run_id)
+    if adapter_path.exists():
+        raise SystemExit(f"Run file already exists: {adapter_path}")
+
+    selected_tasks: list[TaskName] = (
+        [cast(TaskName, args.task)] if args.task else list(TASKS)
+    )
 
     settings = Settings.from_env()
     selected_models = [cast(str, args.model)] if args.model else list(settings.models)
-    run_dir = PROJECT_ROOT / "runs" / run_id
-    if run_dir.exists():
-        raise SystemExit(f"Run directory already exists: {run_dir}")
-    run_dir.mkdir(parents=True)
-    usage_path = run_dir / "usage.jsonl"
-    outputs_path = run_dir / "outputs.jsonl"
-    scores_path = run_dir / "scores.jsonl"
+    adapters: dict[str, ModelAdapter] = {
+        name: cast(ModelAdapter, OllamaAdapter(model_id=settings.models[name].model_id))
+        for name in selected_models
+    }
 
-    all_usage: list[UsageRecord] = []
-    all_outputs: list[OutputRecord] = []
     all_scores: list[ScoreRecord] = []
-    total_cost = Decimal("0")
     validated_by_task_model: dict[tuple[TaskName, str], dict[str, StrictModel]] = defaultdict(dict)
     labels_by_task: dict[TaskName, list[GoldLabel]] = defaultdict(list)
 
-    provider = OllamaProvider(settings)
-    try:
-        for task in selected_tasks:
-            pairs = load_cases(task)
-            if limit is not None:
-                pairs = pairs[:limit]
-            labels_by_task[task] = [gold for _case, gold in pairs]
-            for model_name in selected_models:
-                model = settings.models[model_name]
-                version = prompt_version(task, model_name)
-                for case, gold in pairs:
-                    if total_cost >= settings.per_run_cap_usd:
-                        raise SystemExit(
-                            f"Per-run cost cap reached before {task}/{model_name}/{case.id}"
-                        )
-                    prompt = build_prompt(task, model_name, case.source)
-                    try:
-                        result = provider.complete(
-                            model=model,
-                            prompt=prompt,
-                            output_schema=OUTPUT_SCHEMAS[task],
-                        )
-                        for attempt in result.attempts:
-                            usage_record = _usage_record(
-                                run_id=run_id,
-                                task=task,
-                                case_id=case.id,
-                                model=model,
-                                version=version,
-                                attempt=attempt,
-                            )
-                            append_record(usage_path, usage_record)
-                            all_usage.append(usage_record)
-                            total_cost += usage_record.cost_usd
-                        output_record = OutputRecord(
-                            run_id=run_id,
-                            task=task,
-                            case_id=case.id,
-                            model_name=model_name,
-                            model_id=model.model_id,
-                            prompt_version=version,
-                            succeeded=True,
-                            repairs=result.repairs,
-                            output=result.output.model_dump(mode="json"),
-                        )
-                        validated_by_task_model[(task, model_name)][case.id] = result.output
-                        case_scores = score_output(
-                            run_id=run_id,
-                            task=task,
-                            case_id=case.id,
-                            model_name=model_name,
-                            prompt_version=version,
-                            output=result.output,
-                            gold=gold,
-                            source=case.source,
-                        )
-                    except CompletionFailed as exc:
-                        for attempt in exc.attempts:
-                            usage_record = _usage_record(
-                                run_id=run_id,
-                                task=task,
-                                case_id=case.id,
-                                model=model,
-                                version=version,
-                                attempt=attempt,
-                            )
-                            append_record(usage_path, usage_record)
-                            all_usage.append(usage_record)
-                            total_cost += usage_record.cost_usd
-                        output_record = OutputRecord(
-                            run_id=run_id,
-                            task=task,
-                            case_id=case.id,
-                            model_name=model_name,
-                            model_id=model.model_id,
-                            prompt_version=version,
-                            succeeded=False,
-                            repairs=exc.repairs,
-                            output=None,
-                            error=str(exc),
-                        )
-                        case_scores = failure_scores(
-                            run_id=run_id,
-                            task=task,
-                            case_id=case.id,
-                            model_name=model_name,
-                            prompt_version=version,
-                            gold=gold,
-                        )
-                    append_record(outputs_path, output_record)
-                    all_outputs.append(output_record)
-                    for score in case_scores:
-                        append_record(scores_path, score)
-                        all_scores.append(score)
-                    print(
-                        f"{task:13} {model_name:8} {case.id:5} "
-                        f"{'ok' if output_record.succeeded else 'failed'}"
+    for task in selected_tasks:
+        pairs = load_cases(task)
+        if limit is not None:
+            pairs = pairs[:limit]
+        labels_by_task[task] = [gold for _case, gold in pairs]
+        prompt_id, version = TASK_PROMPTS[task]
+        schema = OUTPUT_SCHEMAS[task]
+        for model_name in selected_models:
+            model = settings.models[model_name]
+            adapter = adapters[model_name]
+            for case, gold in pairs:
+                system, user_content = render_task_user(task, case.document_text)
+                request = CompletionRequest(
+                    task=task,
+                    case_id=case.id,
+                    prompt_id=prompt_id,
+                    prompt_version=version,
+                    system=system,
+                    user_content=user_content,
+                    temperature=settings.temperature,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
+                )
+                try:
+                    output = complete_structured(
+                        adapter,
+                        request,
+                        schema,
+                        run_id,
+                        max_repairs=settings.max_schema_repairs,
                     )
-    finally:
-        provider.close()
+                    validated_by_task_model[(task, model_name)][case.id] = output
+                    case_scores = score_output(
+                        run_id=run_id,
+                        task=task,
+                        case_id=case.id,
+                        model_name=model_name,
+                        prompt_version=version,
+                        output=output,
+                        gold=gold,
+                        source=case.document_text,
+                        model_id=model.model_id,
+                        prompt_id=prompt_id,
+                    )
+                    status = "ok"
+                except (json.JSONDecodeError, ValidationError) as exc:
+                    case_scores = failure_scores(
+                        run_id=run_id,
+                        task=task,
+                        case_id=case.id,
+                        model_name=model_name,
+                        prompt_version=version,
+                        gold=gold,
+                        model_id=model.model_id,
+                        prompt_id=prompt_id,
+                    )
+                    status = f"failed: {exc}"
+                all_scores.extend(case_scores)
+                print(f"{task:13} {model_name:8} {case.id:5} {status}")
 
     for task in selected_tasks:
         if task == "triage":
@@ -295,23 +261,18 @@ def main() -> None:
                 run_id=run_id,
                 task=task,
                 model_name=model_name,
+                model_id=settings.models[model_name].model_id,
                 labels=labels_by_task[task],
                 outputs=validated_by_task_model[(task, model_name)],
-                scores_path=scores_path,
                 all_scores=all_scores,
             )
 
-    write_reports(
-        run_id=run_id,
-        models=selected_models,
-        usage=all_usage,
-        outputs=all_outputs,
-        scores=all_scores,
-        report_path=PROJECT_ROOT / "reports" / "comparison.md",
-        decision_path=PROJECT_ROOT / "docs" / "model-decision.md",
-    )
-    print(f"Report: {PROJECT_ROOT / 'reports' / 'comparison.md'}")
-    print(f"Recorded provider cost: ${total_cost}")
+    calls = _load_call_records(run_id)
+    _write_jsonl(DAY5_RUN_PATH, calls)
+    _write_jsonl(DAY5_SCORES_PATH, all_scores)
+    print(f"wrote {DAY5_RUN_PATH} ({len(calls)} call records)")
+    print(f"wrote {DAY5_SCORES_PATH} ({len(all_scores)} scores)")
+    print(f"run_id={run_id} provider=ollama cost_usd=0.0")
 
 
 if __name__ == "__main__":
