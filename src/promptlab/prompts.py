@@ -15,7 +15,16 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from promptlab.schemas import OUTPUT_SCHEMAS, TaskName, schema_description
+
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
+
+# Assignment Prompt Versions: same frozen files for both models (Instruction 6 transfer).
+TASK_PROMPTS: dict[TaskName, tuple[str, str]] = {
+    "summarization": ("summarize", "v1"),
+    "extraction": ("extract", "v2"),
+    "triage": ("triage", "v1"),
+}
 
 DOCUMENT_MARKER_CLOSE = "</document>"
 CUSTOMER_MARKER_CLOSE = "</customer_message>"
@@ -132,3 +141,19 @@ def render_user(
     for name in required:
         rendered = rendered.replace("{" + name + "}", filled[name])
     return rendered
+
+
+def prompt_version(task: TaskName, model_name: str) -> str:
+    """Return the frozen prompt version. model_name is unused: transfer, not adapted."""
+    del model_name
+    return TASK_PROMPTS[task][1]
+
+
+def render_task_user(task: TaskName, source: str) -> tuple[str, str]:
+    """Load the frozen task prompt and fill it with existing render_user."""
+    prompt_id, version = TASK_PROMPTS[task]
+    template = load(prompt_id, version)
+    variables: dict[str, str] = {}
+    if "schema_description" in _placeholders(template.user_template):
+        variables["schema_description"] = schema_description(OUTPUT_SCHEMAS[task])
+    return template.system, render_user(template, variables, source)
